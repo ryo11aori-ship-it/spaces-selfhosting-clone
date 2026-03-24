@@ -25,12 +25,10 @@ jobs:
         echo "  - Single Semantic Origin: Semantic validation uses a dual-oracle model (C VM vs Pure Python VM)."
         echo "  - Execution Substrate Dependency: DDC spans across distinct OS boundaries (Ubuntu vs Alpine/musl)."
         echo "[Security Guarantees]"
-        echo "  - Memory Protection (W^X): Strict RX (code) and RW (data) segregation via dynamic mmap allocation, proven statically and at runtime."
+        echo "  - Memory Protection (W^X): The compiler ensures strict RX (code) and RW (data) segregation via dynamic mmap allocation."
 
     - name: 1. Setup Tools
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y clang tcc strace binutils libc-bin python3 musl-tools python3-seccomp
+      run: sudo apt-get update && sudo apt-get install -y clang tcc strace binutils libc-bin python3 musl-tools python3-seccomp
 
     - name: 1.5. Auto-generate and Save compiler.spaces
       run: |
@@ -42,7 +40,7 @@ jobs:
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
         git add src/compiler_spaces_reader.bf src/compiler.spaces spaces/self/compiler.spaces
-        if ! git diff --staged --quiet; then git commit -m "feat: Auto-regenerate compiler.spaces with Static and Runtime W^X enforced" && git push; else echo "✅ No changes in compiler.spaces detected. Proceeding..."; fi
+        if ! git diff --staged --quiet; then git commit -m "feat: Auto-regenerate compiler.spaces with W^X memory protection enforced" && git push; else echo "✅ No changes in compiler.spaces detected. Proceeding..."; fi
 
     - name: 2. The Big Bang (Quad-Crown DDC via glibc & musl)
       run: |
@@ -178,7 +176,8 @@ jobs:
         echo "=== Runtime W^X Verification ==="
         strace -f -e trace=mmap,mprotect ./compiler.elf < src/compiler.spaces > /dev/null 2> mmap_trace.log
         cat mmap_trace.log
-        if grep "PROT_EXEC" mmap_trace.log | grep -q "PROT_WRITE"; then echo "❌ RUNTIME RWX DETECTED"; exit 1; fi
+        # 🚀 指摘の通り、明示的で順序に依存しない正規表現でW+Xの同時要求を厳格に弾く！
+        if grep -qE "PROT_EXEC.*PROT_WRITE|PROT_WRITE.*PROT_EXEC" mmap_trace.log; then echo "❌ RUNTIME RWX DETECTED"; exit 1; fi
         echo "✅ VERIFIED: Strict W^X memory protection enforced both statically and at runtime."
 
     - name: 8. Prove B - Syscall Runtime Guarantee (Seccomp Sandbox)
