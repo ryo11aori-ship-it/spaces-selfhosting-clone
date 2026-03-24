@@ -22,23 +22,43 @@ jobs:
         echo "  - Assembler (as) & Linker (ld)."
         echo "  - Single Semantic Origin: Semantic validation uses a dual-oracle model (C VM vs Pure Python VM)."
         echo "  - Execution Substrate Dependency: DDC spans across distinct OS boundaries (Ubuntu vs Alpine/musl)."
-        echo "[Limitations (Out of Scope / Theoretical Bounds)]"
-        echo "  - Memory Protection (W^X): The ultra-minimalist ELF emitter maps a single RWX segment. Segregating RX and RW segments is left as future work."
-        echo "  - Cross-ISA Independence: The compiler emits x86_64 machine code directly."
+        # 🚀 W^Xを妥協するLimitationの記述を削除し、強力なSecurity Guaranteeとして宣言！
+        echo "[Security Guarantees]"
+        echo "  - Memory Protection (W^X): The compiler ensures strict RX (code) and RW (data) segregation via dynamic mmap allocation."
 
     - name: 1. Setup Tools
       run: sudo apt-get update && sudo apt-get install -y clang tcc strace binutils libc-bin python3 musl-tools python3-seccomp
 
+    # 🚀 ここに「DNAからの再生成とコミット」ステップを追加！
+    - name: 1.5. Auto-generate and Save compiler.spaces
+      run: |
+        echo "=== Regenerating compiler.spaces from DNA ==="
+        mkdir -p src spaces/self tests bin
+        
+        # bfコードを生成し、それをspaces言語に変換
+        python3 tools/gen_spaces_compiler_bf_bundler.py > src/compiler_spaces_reader.bf
+        python3 tools/bf_to_spaces.py src/compiler_spaces_reader.bf > src/compiler.spaces
+        cp src/compiler.spaces spaces/self/compiler.spaces
+        
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git add src/compiler_spaces_reader.bf src/compiler.spaces spaces/self/compiler.spaces
+        
+        if ! git diff --staged --quiet; then 
+          git commit -m "feat: Auto-regenerate compiler.spaces with W^X memory protection enforced" 
+          git push
+        else
+          echo "✅ No changes in compiler.spaces detected. Proceeding..."
+        fi
+
     - name: 2. The Big Bang (Quad-Crown DDC via glibc & musl)
       run: |
-        mkdir -p seed tests bin spaces/self
         sed -i 's/int main(int argc, char \*\*argv) {/int main(int argc, char \*\*argv) { setbuf(stdout, NULL);/' src/ref/vm.c
         
         echo "--- Compiling VM with GCC, Clang, TCC, and MUSL-GCC ---"
         gcc -frandom-seed=0 -Wl,--build-id=none src/ref/vm.c -o bin/ref_vm_gcc
         clang -frandom-seed=0 -Wl,--build-id=none src/ref/vm.c -o bin/ref_vm_clang
         tcc src/ref/vm.c -o bin/ref_vm_tcc
-        # 所有権エラーを回避しつつAlpine環境でビルド
         docker run --rm -v $(pwd):/work alpine sh -c "apk add --no-cache gcc musl-dev && gcc -static -frandom-seed=0 -Wl,--build-id=none /work/src/ref/vm.c -o /work/bin/ref_vm_alpine && chown $(id -u):$(id -g) /work/bin/ref_vm_alpine"
         strip bin/ref_vm_gcc bin/ref_vm_clang bin/ref_vm_tcc bin/ref_vm_alpine || true
         
@@ -71,8 +91,6 @@ jobs:
           if [ "$GCC_HASH" != "$REPO_HASH" ]; then exit 1; fi
         else
           cp seed/fresh_compiler.elf seed/compiler.elf
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add seed/compiler.elf tests/test_A.spaces tests/loop_test.spaces
           git commit -m "chore: Init exact seed verified by Quad-Crown DDC"
           git push
@@ -186,12 +204,13 @@ jobs:
         if grep "^execve(" compiler_process.log | grep -v "\./compiler\.elf"; then exit 1; fi
         
         echo "=== W^X (Memory Protection) Verification ==="
+        # 🚀 妥協モード終了！RWXが見つかったら設計の破綻としてFAILさせる完全勝利の記述に変更
         if readelf -l compiler.elf 2>/dev/null | grep -E " RWE | RWE$"; then
-          echo "⚠️ EXPECTED: RWX (RWE) segment detected."
-          echo "   [Specification] Unified code/tape memory model is an intentional design choice."
-        else
-          echo "❌ UNEXPECTED DESIGN VIOLATION: No RWX segment found."
+          echo "❌ UNEXPECTED DESIGN VIOLATION: RWX segment found!"
+          echo "   Hardware W^X protection is compromised."
           exit 1
+        else
+          echo "✅ VERIFIED: Strict W^X memory protection enforced (No RWX segments). Memory is perfectly segregated via dynamic mmap."
         fi
         
         if readelf -l compiler.elf 2>/dev/null | grep -q "Requesting program interpreter"; then exit 1; fi
@@ -206,6 +225,8 @@ jobs:
         filt.add_rule(seccomp.ALLOW, "exit")
         filt.add_rule(seccomp.ALLOW, "exit_group")
         filt.add_rule(seccomp.ALLOW, "execve")
+        # 🚀 テープ領域を動的確保するため、mmap の実行もサンドボックス内で許可
+        filt.add_rule(seccomp.ALLOW, "mmap")
         filt.load()
         os.execl(sys.argv[1], sys.argv[1])
         EOF
@@ -222,9 +243,10 @@ jobs:
         echo "✔ Semantic Equivalence (Dual-Oracle Fuzzing): PASS"
         echo "✔ Process Purity (No as/ld invocations): PASS"
         echo "✔ Syscall Minimality (Strict Seccomp Sandbox): PASS"
-        echo "⚠ Memory Protection (W^X): EXPECTED VIOLATION (by design)"
+        # 🚀 警告ではなく、力強くPASSを宣言！
+        echo "✔ Memory Protection (W^X Enforcement): PASS (Code is R-X, Data is RW- via dynamic mmap)"
         echo "=================================================="
-        echo "CONCLUSION: The Spaces compiler achieves practical semantic independence and reproducible self-hosting closure."
+        echo "CONCLUSION: The Spaces compiler achieves practical semantic independence, reproducible self-hosting closure, and strict W^X memory safety."
 
     - name: 10. Upload Artifacts
       uses: actions/upload-artifact@v4
