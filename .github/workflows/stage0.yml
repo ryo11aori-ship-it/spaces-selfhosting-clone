@@ -25,10 +25,12 @@ jobs:
         echo "  - Single Semantic Origin: Semantic validation uses a dual-oracle model (C VM vs Pure Python VM)."
         echo "  - Execution Substrate Dependency: DDC spans across distinct OS boundaries (Ubuntu vs Alpine/musl)."
         echo "[Security Guarantees]"
-        echo "  - Memory Protection (W^X): The compiler ensures strict RX (code) and RW (data) segregation via dynamic mmap allocation."
+        echo "  - Memory Protection (W^X): Strict RX (code) and RW (data) segregation via dynamic mmap allocation, proven statically and at runtime."
 
     - name: 1. Setup Tools
-      run: sudo apt-get update && sudo apt-get install -y clang tcc strace binutils libc-bin python3 musl-tools python3-seccomp
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang tcc strace binutils libc-bin python3 musl-tools python3-seccomp
 
     - name: 1.5. Auto-generate and Save compiler.spaces
       run: |
@@ -40,7 +42,7 @@ jobs:
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
         git add src/compiler_spaces_reader.bf src/compiler.spaces spaces/self/compiler.spaces
-        if ! git diff --staged --quiet; then git commit -m "feat: Auto-regenerate compiler.spaces with W^X memory protection enforced" && git push; else echo "✅ No changes in compiler.spaces detected. Proceeding..."; fi
+        if ! git diff --staged --quiet; then git commit -m "feat: Auto-regenerate compiler.spaces with Static and Runtime W^X enforced" && git push; else echo "✅ No changes in compiler.spaces detected. Proceeding..."; fi
 
     - name: 2. The Big Bang (Quad-Crown DDC via glibc & musl)
       run: |
@@ -68,32 +70,12 @@ jobs:
         echo "MUSL-GCC:      $ALPINE_HASH"
         if [ "$GCC_HASH" != "$CLANG_HASH" ] || [ "$GCC_HASH" != "$TCC_HASH" ] || [ "$GCC_HASH" != "$ALPINE_HASH" ]; then exit 1; fi
         echo "✅ QUAD-CROWN DDC PASSED"
-        
         cp seed/fresh_compiler_gcc.elf seed/fresh_compiler.elf
         python3 tools/bf_to_spaces.py <(echo "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++.") > tests/test_A.spaces
         python3 tools/bf_to_spaces.py <(echo "++++++[>+++++++++++<-]>.") > tests/loop_test.spaces
-        
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        
-        # 🚀 修正: ハッシュが違った場合は古いSeedを新しい安全なSeedで上書きしてPushする
-        if [ -f seed/compiler.elf ]; then 
-          REPO_HASH=$(sha256sum seed/compiler.elf | awk '{print $1}')
-          if [ "$GCC_HASH" != "$REPO_HASH" ]; then 
-            echo "⚠️ DNA change detected. Updating seed/compiler.elf in repository..."
-            cp seed/fresh_compiler.elf seed/compiler.elf
-            git add seed/compiler.elf tests/test_A.spaces tests/loop_test.spaces
-            git commit -m "chore: Update seed compiler for W^X enforcement"
-            git push
-          else
-            echo "✅ PROVENANCE PASSED: Repo seed matches fresh build."
-          fi
-        else 
-          cp seed/fresh_compiler.elf seed/compiler.elf
-          git add seed/compiler.elf tests/test_A.spaces tests/loop_test.spaces
-          git commit -m "chore: Init exact seed verified by Quad-Crown DDC"
-          git push
-        fi
+        if [ -f seed/compiler.elf ]; then REPO_HASH=$(sha256sum seed/compiler.elf | awk '{print $1}'); if [ "$GCC_HASH" != "$REPO_HASH" ]; then cp seed/fresh_compiler.elf seed/compiler.elf; git add seed/compiler.elf tests/test_A.spaces tests/loop_test.spaces; git commit -m "chore: Update seed compiler for W^X enforcement"; git push; fi; else cp seed/fresh_compiler.elf seed/compiler.elf; git add seed/compiler.elf tests/test_A.spaces tests/loop_test.spaces; git commit -m "chore: Init exact seed verified by Quad-Crown DDC"; git push; fi
 
     - name: 3. Bootstrap & Basic Functional Tests
       run: |
@@ -183,22 +165,21 @@ jobs:
           diff out_ref_$i out_comp_$i || exit 1
         done
 
-    - name: 7. Prove E - Formal ELF Generation & W^X Specification
+    - name: 7. Prove E - Formal ELF Generation & Static/Runtime W^X
       run: |
         echo "=== Process Trace of Compiler ==="
         strace -f -e trace=process ./compiler.elf < src/compiler.spaces > /dev/null 2> compiler_process.log
         if grep -E "^(fork|vfork|clone)\(" compiler_process.log; then exit 1; fi
         if grep "^execve(" compiler_process.log | grep -v "\./compiler\.elf"; then exit 1; fi
-        echo "=== W^X (Memory Protection) Verification ==="
-        if readelf -l compiler.elf 2>/dev/null | grep -E " RWE | RWE$"; then
-          echo "❌ UNEXPECTED DESIGN VIOLATION: RWX segment found!"
-          echo "   Hardware W^X protection is compromised."
-          exit 1
-        else
-          echo "✅ VERIFIED: Strict W^X memory protection enforced (No RWX segments). Memory is perfectly segregated via dynamic mmap."
-        fi
+        echo "=== Static W^X Verification ==="
+        if readelf -l compiler.elf 2>/dev/null | grep -E " RWE | RWE$"; then echo "❌ STATIC RWX DETECTED"; exit 1; fi
         if readelf -l compiler.elf 2>/dev/null | grep -q "Requesting program interpreter"; then exit 1; fi
         if readelf -S compiler.elf 2>/dev/null | grep -qE "\.dynamic|\.plt|\.got"; then exit 1; fi
+        echo "=== Runtime W^X Verification ==="
+        strace -f -e trace=mmap,mprotect ./compiler.elf < src/compiler.spaces > /dev/null 2> mmap_trace.log
+        cat mmap_trace.log
+        if grep "PROT_EXEC" mmap_trace.log | grep -q "PROT_WRITE"; then echo "❌ RUNTIME RWX DETECTED"; exit 1; fi
+        echo "✅ VERIFIED: Strict W^X memory protection enforced both statically and at runtime."
 
     - name: 8. Prove B - Syscall Runtime Guarantee (Seccomp Sandbox)
       run: |
@@ -226,7 +207,8 @@ jobs:
         echo "✔ Semantic Equivalence (Dual-Oracle Fuzzing): PASS"
         echo "✔ Process Purity (No as/ld invocations): PASS"
         echo "✔ Syscall Minimality (Strict Seccomp Sandbox): PASS"
-        echo "✔ Memory Protection (W^X Enforcement): PASS (Code is R-X, Data is RW- via dynamic mmap)"
+        echo "✔ Static W^X Enforcement (ELF p_flags): PASS"
+        echo "✔ Runtime W^X Enforcement (mmap/mprotect): PASS"
         echo "=================================================="
         echo "CONCLUSION: The Spaces compiler achieves practical semantic independence, reproducible self-hosting closure, and strict W^X memory safety."
 
